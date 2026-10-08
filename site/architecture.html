@@ -90,10 +90,10 @@ ul{padding-left:1.2em}li::marker{color:var(--phos-dim)}
 <header class="hero"><div class="wrap">
 <div class="eyebrow">UAC-ENG-DRPG-0451 · Reverse-engineering report · single-file browser port <span class="stamp">Restricted</span></div>
 <h1>Doom RPG Web Engine: from MIDP assumptions to browser hardware</h1>
-<p class="lede">A technical description of the attached engine, with special attention to the Java/MIDP compatibility layer, the browser device bridge, software rendering, event delivery, RecordStore persistence, resource packaging, TeaVM threading, and the complete MIDI → Web Audio synthesis path.</p>
-<div class="chips"><span class="chip">176 × 208 framebuffer</span><span class="chip">TeaVM Java → JavaScript</span><span class="chip">MIDP-style Canvas / Display</span><span class="chip">RecordStore → localStorage</span><span class="chip">MIDI → oscillator/noise synth</span><span class="chip">single HTML payload</span></div>
+<p class="lede">A technical description of the attached engine, with special attention to the Java/MIDP compatibility layer, the browser device bridge, software rendering, the BSP world renderer, event delivery, RecordStore persistence, resource packaging, TeaVM threading, and the complete MIDI → Web Audio synthesis path.</p>
+<div class="chips"><span class="chip">176 × 208 framebuffer</span><span class="chip">TeaVM Java → JavaScript</span><span class="chip">BSP + per-column depth renderer</span><span class="chip">MIDP-style Canvas / Display</span><span class="chip">RecordStore → localStorage</span><span class="chip">MIDI → oscillator/noise synth</span><span class="chip">single HTML payload</span></div>
 </div></header>
-<nav class="toc"><div class="wrap"><a href="#summary">Summary</a><a href="#runtime">Runtime model</a><a href="#bridge">MIDP bridge</a><a href="#graphics">Graphics</a><a href="#input">Input</a><a href="#audio">Audio</a><a href="#persistence">Persistence</a><a href="#resources">Resources</a><a href="#threads">Threads</a><a href="#boot">Boot</a><a href="#limits">Fidelity & limits</a></div></nav>
+<nav class="toc"><div class="wrap"><a href="#summary">Summary</a><a href="#runtime">Runtime model</a><a href="#bridge">MIDP bridge</a><a href="#graphics">Graphics</a><a href="#renderer">3D renderer</a><a href="#input">Input</a><a href="#audio">Audio</a><a href="#persistence">Persistence</a><a href="#resources">Resources</a><a href="#threads">Threads</a><a href="#boot">Boot</a><a href="#limits">Fidelity & limits</a></div></nav>
 <main class="wrap">
 <section id="summary"><h2>1. Executive architecture</h2>
 <p class="section-note">The artifact is best understood as three layers: the original game logic and MIDP-like APIs, compiled by TeaVM into JavaScript; a small compatibility implementation that emulates the J2ME platform semantics; and an intentionally tiny host bridge that touches actual browser APIs.</p>
@@ -160,30 +160,193 @@ __present = function (px, w, h) {
 };</pre>
 <p class="src">Evidence: attached HTML lines 113–120 for the host presenter; generated Canvas shim calls <code>__present</code> from the compiled runtime.</p>
 </section>
-<section id="input"><h2>5. Input: DOM events become MIDP keycodes</h2>
+<section id="renderer"><h2>5. The 3D view: a Wolfenstein-style picture from a Doom-style renderer</h2>
+<p class="section-note">Everything in section 4 is about getting pixels <em>out</em>. This section covers how the first-person view gets drawn into the framebuffer in the first place. It isolates the world renderer inside the TeaVM bundle, explains the algorithm in general terms, and then walks through the generated JavaScript.</p>
+<div class="callout important"><strong>It is not a raycaster:</strong> Doom RPG’s view looks like Wolfenstein 3D: one storey, walls all the same height, flat-coloured floor and ceiling, grid movement, 90° turns. The code doesn’t cast rays, though. Nothing marches a ray through the tile grid column by column. The <code>.bsp</code> levels hold a binary space partition (BSP) of wall <em>line segments</em>. The renderer walks that tree front to back, projects each segment onto the screen, and fills the columns it covers. A Wolf3D raycaster also ends up with exactly one wall per column and a per-column distance, so the output matches. Doom RPG just gets there with Doom’s method.</div>
+
+<h3>5.1 The algorithm in brief</h3>
+<p>A Wolfenstein raycaster answers one question per screen column: <em>what is the nearest wall along this column’s line of sight, and how far away is it?</em> It answers by stepping a ray through the tile map until it hits a solid tile. Wall height on screen is proportional to 1/distance. The distances go into a per-column array, which later clips sprites.</p>
+<p>Doom RPG answers the same question in reverse. It doesn’t ask, per column, which wall is there. It asks, per wall, which columns it covers. Because every wall is opaque and full height, the first wall to claim a column owns it completely. If walls arrive nearest-first, every column ends up holding the nearest wall, which is the raycaster’s result. A BSP tree is the classic way to get walls in nearest-first order cheaply, so that is what the level files contain.</p>
+<div class="diagram"><svg viewBox="0 0 1080 420" role="img" aria-label="Top-down view of the camera frustum, BSP split and wall segments"><defs><marker id="arrow9" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2f9f57"/></marker></defs>
+<g stroke="#12281a" stroke-width="1"><path d="M60 20 V380 M120 20 V380 M180 20 V380 M240 20 V380 M300 20 V380 M360 20 V380 M420 20 V380 M480 20 V380 M540 20 V380"/><path d="M60 20 H540 M60 80 H540 M60 140 H540 M60 200 H540 M60 260 H540 M60 320 H540 M60 380 H540"/></g>
+<path d="M300 380 L70 150 M300 380 L530 150" stroke="#2f9f57" stroke-width="1.6" fill="none" stroke-dasharray="6 5"/>
+<path d="M420 20 V380" stroke="#ffb627" stroke-width="1.6" stroke-dasharray="3 6"/><text class="t2" x="428" y="40" style="fill:#ffb627">BSP split x = const</text>
+<path d="M120 200 H360" stroke="#4dff88" stroke-width="5"/><text class="t2" x="130" y="192">near wall: drawn first</text>
+<path d="M240 80 H520" stroke="#5fe3c0" stroke-width="5"/><text class="t2" x="250" y="72">far wall: only uncovered columns</text>
+<path d="M360 200 V80" stroke="#ee4433" stroke-width="5" opacity=".55"/><text class="t2" x="366" y="250" style="fill:#ee4433">back-facing: culled</text>
+<path d="M300 380 L232 200" stroke="#e6ffe9" stroke-width="1.2" stroke-dasharray="2 4"/><text class="t2" x="88" y="300">column x → G6[x] = depth</text>
+<circle cx="300" cy="380" r="7" fill="#ffb627"/><path d="M300 380 V350" stroke="#ffb627" stroke-width="2" marker-end="url(#arrow9)"/>
+<text class="t1" x="600" y="60">Per frame</text>
+<text class="t2" x="600" y="92">1. Clear G6[0..width) to "empty" (2³¹−1).</text>
+<text class="t2" x="600" y="118">2. Walk the BSP from the root, near side first.</text>
+<text class="t2" x="600" y="144">3. Skip a subtree if its bounding box is off-screen</text>
+<text class="t2" x="618" y="164">or every column it would cover is already filled.</text>
+<text class="t2" x="600" y="190">4. At a leaf, back-face cull each segment, transform it</text>
+<text class="t2" x="618" y="210">to view space, clip it to the 90° frustum, project it.</text>
+<text class="t2" x="600" y="236">5. For each covered column: if nearer than G6[x],</text>
+<text class="t2" x="618" y="256">record the depth and draw one textured wall column.</text>
+<text class="t2" x="600" y="282">6. Sprites collected from visited leaves are drawn</text>
+<text class="t2" x="618" y="302">far to near, clipped per column against G6.</text>
+<text class="t2" x="600" y="340" style="fill:#6fa985">The dotted line shows what a column ends up seeing.</text>
+<text class="t2" x="600" y="360" style="fill:#6fa985">No ray is ever stepped along it.</text>
+</svg></div>
+
+<div class="tablewrap"><table><thead><tr><th>Concern</th><th>Wolfenstein 3D raycaster</th><th>Doom RPG renderer (this bundle)</th></tr></thead><tbody>
+<tr><td>World data</td><td>Tile grid; a tile is either solid or empty</td><td>32 × 32 grid of 64-unit tiles, stored as wall line segments plus an axis-aligned BSP over them</td></tr>
+<tr><td>Finding visible walls</td><td>Step a ray through the grid for every screen column</td><td>Walk the BSP front to back and project whole segments</td></tr>
+<tr><td>Hidden-surface removal</td><td>Implicit: the ray stops at the first hit</td><td>Per-column depth array <code>G6</code>: a column takes a wall only if it is nearer than what the column already holds</td></tr>
+<tr><td>Wall height</td><td>Constant; on-screen height ∝ 1/distance</td><td>Same: 64 world units, on-screen height ∝ 1/z</td></tr>
+<tr><td>Texture column</td><td>Where the ray hit the tile face</td><td>u/z and 1/z interpolated across the projected segment, divided per column, so the result is perspective-correct</td></tr>
+<tr><td>Floor / ceiling</td><td>Flat colours</td><td>Flat colours: one precomputed row each, copied into every scanline</td></tr>
+<tr><td>Sprites</td><td>Sorted, scaled, clipped per column against wall distance</td><td>Same idea, but each sprite is turned into a camera-facing segment and drawn by the same projection code as walls</td></tr>
+</tbody></table></div>
+
+<h3>5.2 Where it lives in the bundle</h3>
+<p>TeaVM minifies every identifier, so the renderer has no class name you can grep for. It can be found by following its own debug strings. The game’s profiler overlay prints <code>"nd:%1/%2"</code> (nodes visited), <code>"li:%1/%2/%3"</code> (lines) and <code>"sp:%1/%2/%3"</code> (sprites). The counters it prints are reset at the top of a function that also loads <code>/sintable.bin</code>-derived values. That function is the per-frame entry point, and everything else hangs off it. Strings are referenced as <code>E(n)</code>, an index into the pool passed to <code>ZN([...])</code> at the end of the bundle.</p>
+<div class="api">
+<div class="lhs">SA(x, y, angle)</div><div class="rhs">Frame entry. Builds the view transform, clears the depth array, paints floor and ceiling, starts the BSP walk, then draws the sorted sprite list.</div>
+<div class="lhs">JT(node)</div><div class="rhs">Recursive front-to-back BSP traversal. At leaves, draws wall segments and collects sprites into a depth-sorted list.</div>
+<div class="lhs">ZU(node)</div><div class="rhs">Node culling: is the bounding box in the frustum, and does it cover any column not yet filled?</div>
+<div class="lhs">NR / JW</div><div class="rhs"><code>NR</code> back-face culls a segment using a 2-D cross product (or flips it if two-sided). <code>JW</code> transforms one vertex from world to view space.</div>
+<div class="lhs">V4 / Ic</div><div class="rhs">Clips a segment against the left and right frustum planes (x = ±z, a 90° FOV) and a near plane at z = 4. <code>Ic</code> interpolates the clipped vertex.</div>
+<div class="lhs">LQ</div><div class="rhs">Perspective projection of one vertex: screen x, a 1/z scale, and u·(1/z) for the texture.</div>
+<div class="lhs">Qy</div><div class="rhs">Clip, project, then dispatch: solid wall → <code>AAP</code>; masked/sprite segment → <code>AA$</code>. Also sets the line’s “seen” bit for the automap.</div>
+<div class="lhs">AAP</div><div class="rhs">Solid wall span: per column depth test against <code>G6</code>, texture column selection, vertical extent, then <code>OE</code>.</div>
+<div class="lhs">AA$</div><div class="rhs">Masked span (sprites, bars, decals): like <code>AAP</code> but walks run-length-encoded posts and skips transparent gaps. Tests <code>G6</code> but does not write it.</div>
+<div class="lhs">OE(dst, tex, step, n)</div><div class="rhs">The innermost loop: draws one vertical strip of texels into the framebuffer, unrolled ×8.</div>
+<div class="lhs">T$ / HJ</div><div class="rhs">Sprite submission. <code>HJ</code> builds a segment for a sprite, either facing the camera or locked to a world axis, and sends it through <code>Qy</code> or <code>NR</code>.</div>
+<div class="lhs">ABm</div><div class="rhs">Level loader: reads node and line records from the <code>.bsp</code> stream into <code>IX</code> (nodes) and <code>BK</code> (lines).</div>
+</div>
+<p class="src">These names are TeaVM output for this build only. Any recompile reassigns them. Key globals: <code>Et</code> view pixel array · <code>G6</code> per-column depth · <code>Fe</code> sine table · <code>B6</code>/<code>Cw</code> view width/height · <code>Pi</code> horizon row · <code>LA</code>/<code>Hb</code> eye x/y · <code>Iw</code> sorted sprite list.</p>
+
+<h3>5.3 Level data: a BSP of byte-sized lines</h3>
+<p>A <code>.bsp</code> file holds a node count followed by 10-byte node records, then a line count followed by 8-byte line records. Coordinates are single bytes multiplied by 8, which gives a 2048 × 2048 unit world in 8-unit steps, or 32 × 32 tiles of 64 units.</p>
+<pre>// ABm, node records (10 bytes)
+e.jB = EB(0); e.im = EB(1);            // bbox xmin, ymin   (EB = (byte &amp; 255) &lt;&lt; 3)
+e.ij = EB(2); e.hT = EB(3);            // bbox xmax, ymax
+e.i4 = EB(5) | (byte4 &lt;&lt; 16);          // split coord | axis flags (0x10000 = x, 0x20000 = y, 0 = leaf)
+e.hu = De(6) | De(8) &lt;&lt; 16;            // two 16-bit children, or (firstLine, lineCount) at a leaf
+
+// line records (8 bytes)
+e.g1.gS = EB(0); e.g1.gT = EB(1);      // v1 x, y
+e.g0.gS = EB(2); e.g0.gT = EB(3);      // v2 x, y
+e.ha = De(4);                          // texture id
+e.g4 = De(6) &amp; 65535;                  // flags: 1 two-sided, 2 masked, 128 seen-on-automap, …
+// texture u runs 0 → max(|dx|,|dy|) along the line; walls are axis-aligned, so that is its length</pre>
+<p>Every split is axis-aligned (a vertical or horizontal line through the grid), so choosing a side is one integer comparison, not a dot product. That suits a level built on tiles.</p>
+
+<h3>5.4 Walking the frame, in the generated JavaScript</h3>
+<p>The excerpts below are the beautified bundle. Comments are added and some lines are condensed (a few <code>| 0</code> coercions and clipping branches elided). Variable names are the bundle’s own unless a comment says otherwise.</p>
+<h4>Camera setup: SA</h4>
+<pre>SA = (b, c, d) =&gt; {                      // b = x, c = y, d = angle (0..255 = full turn)
+    J();                                 // static-initialiser guard, see 5.5
+    e = Fe.data;                         // 256-entry sine table, 16.16 fixed point
+    f = e[d &amp; 255];                      // sin
+    d = e[(d + 64 | 0) &amp; 255];           // cos: sin shifted a quarter turn
+    b = b - ((16 * d | 0) &gt;&gt; 16) | 0;    // eye sits 16 units behind the player position
+    c = c + ((16 * f | 0) &gt;&gt; 16) | 0;
+    LA = b; Hb = c;                      // eye x, y
+    M9 = d; Mj = -f | 0;  Pd = -(N(b, d) + N(c, Mj) | 0) | 0;   // depth row of the matrix
+    Uv = f; Sz = d;       QB = -(N(b, f) + N(c, d) | 0) | 0;   // lateral row
+    b = B6; while (--b &gt;= 0) G6.data[b] = 2147483647;          // every column "empty"
+    // top half: copy ceiling row Ez into each scanline; bottom half: floor row EV
+    ...
+    Iw = null; JT(0);                    // BSP walk from the root collects sprites into Iw
+    for (i = Iw; i !== null; i = i.hH) T$(i);   // then draw them, far to near
+}</pre>
+<h4>BSP traversal: JT</h4>
+<pre>JT = b =&gt; {
+    c = IX.data[b];
+    if (ZU(c)) return;                   // off-screen, or every column it covers is already filled
+    b = c.i4;
+    if (b &amp; 196608) {                    // 0x30000: an inner node
+        d = b &amp; 65535;                   // split coordinate
+        if ((b &amp; 131072 &amp;&amp; Hb &gt; d) || (b &amp; 65536 &amp;&amp; LA &gt; d)) {
+            JT(c.hu &amp; 65535); JT(c.hu &gt;&gt; 16 &amp; 65535);    // eye's side first
+        } else {
+            JT(c.hu &gt;&gt; 16 &amp; 65535); JT(c.hu &amp; 65535);
+        }
+        return;
+    }
+    // leaf: copy each line into the scratch segment Ix (transforms are in place), then NR(Ix)
+    // and insert each sprite linked to this leaf into Iw, sorted by view depth
+}</pre>
+<p><code>ZU</code> is what keeps the walk cheap. If the eye is inside the node’s box it always descends. Otherwise it picks the two box corners that form the silhouette as seen from the eye, transforms, clips and projects them like a wall, and then scans <code>G6</code> across that screen span. If no column there still reads <code>2147483647</code>, nothing behind the box can show, and the whole subtree is skipped. A Wolf3D raycaster gets this early-out for free when its ray stops. Here it falls out of the column array.</p>
+<h4>Projecting a segment: JW → V4 → LQ</h4>
+<pre>JW = v =&gt; {                              // world → view (both rows of the 2×2 rotation + translation)
+    z = N(v.gS, M9) + N(v.gT, Mj) + Pd;  // depth along the view direction
+    x = N(v.gS, Uv) + N(v.gT, Sz) + QB;  // lateral offset
+    v.gS = z; v.gT = x;
+}
+// V4: clip against z + x ≥ 0, z − x ≥ 0 (the 90° frustum) and z ≥ 262144 (4.0 in 16.16)
+LQ = v =&gt; {
+    d = BI(Cy(Cu(F(B6), HQ(0, 1)), F(v.gS)));      // scale = width · 2³² / z   (Java long math)
+    v.gT = d;                                      // keep 1/z (scaled) for interpolation
+    v.gS = Ld + BI(CQ(Cu(F(x), F(d)), 17));        // screen x = centre + x·(width/2)/z
+    v.g3 = N(v.g3, d);                             // u · (1/z)
+}</pre>
+<p>A 90° field of view means the focal length is exactly half the view width, which is why the projection has no tangent term.</p>
+<h4>Filling wall columns: AAP and OE</h4>
+<pre>// AAP: step 1/z (q) and u/z (p) linearly across the screen span n..o
+while (n &lt; o) {
+    d = (1073741824 / q | 0) &lt;&lt; 2;       // back to depth: z ∝ 1/q
+    s = Nu(Cu(F(p), F(d))) &amp; 63;         // texture column = (u/z)·z, wrapped to 64
+    q = q + g | 0;  p = p + m | 0;
+    if (d &lt;= G6.data[n]) {               // nearer than whatever already owns this column
+        G6.data[n] = d;
+        t = d &gt;&gt; 3;                      // texel step per screen pixel
+        l = (64 * q | 0) &gt;&gt; 17;          // on-screen height of a 64-unit wall
+        u = Pi - (N(32 - J0, q) &gt;&gt; 17);  // top row: horizon minus (eye height above floor)·scale
+        d = (i + s * 64 | 0) &lt;&lt; 12;      // texture start (texels stored column-major, 64 per column)
+        ... clip u/l to the view, advancing d past rows above the top ...
+        OE(n + N(u, B6) | 0, d, t, l);
+    }
+    n = n + 1 | 0;
+}
+
+OE = (b, c, d, e) =&gt; {                   // dst index, tex coord (20.12 fixed), step, count
+    while (e &gt;= 8) { /* 8 × { px[dst] = pal[texels[c &gt;&gt; 12]]; c += step; dst += width; } */ }
+    while (--e &gt;= 0) { Et.data[b] = Hn.data[JS.data[c &gt;&gt; 12]]; c = c + d | 0; b = b + B6 | 0; }
+}</pre>
+<p>Textures are 64 × 64 arrays of 4-bit palette indices (<code>JS</code>). Before a span is drawn, its 16-colour palette is copied into <code>Hn</code>. A tint flag rewrites those 16 entries towards red before drawing, so a whole wall or sprite can be recoloured without touching the framebuffer.</p>
+<h4>Sprites are segments too: HJ and AA$</h4>
+<p>Sprites don’t get a renderer of their own. <code>HJ</code> transforms the sprite’s position, pulls it 16 units towards the camera, and builds a two-vertex segment straddling it in view space: a billboard. That segment goes through the same <code>Qy</code> clip/project path as a wall. Some decorations are flagged to stay locked to a world axis instead (flags <code>0x80000</code>–<code>0x400000</code>). They are built in world space and passed to <code>NR</code>, so they behave like thin walls.</p>
+<p>Segments flagged masked (<code>g4 &amp; 2</code>) go to <code>AA$</code>. Its column loop matches <code>AAP</code>, but instead of one strip per column it reads run-length posts from <code>stexels</code> data, each a start row and a length, terminated by <code>127</code>. It draws only the opaque runs. It reads <code>G6</code> to hide behind walls but never writes it. Because <code>JT</code> already inserted sprites into <code>Iw</code> sorted far to near, overlapping sprites resolve by painter’s order. That is the same split Wolfenstein uses: a depth array for walls, sorting for sprites.</p>
+
+<h3>5.5 How TeaVM rendered the Java</h3>
+<p>The renderer is plain integer and fixed-point Java, and TeaVM translates it closely. What shows up in the JavaScript is mostly Java’s numeric semantics being enforced by hand:</p>
+<div class="grid">
+<div class="card span6"><h3>int and short arithmetic</h3><ul><li>Every <code>int</code> add or subtract is followed by <code>| 0</code> to force 32-bit wraparound.</li><li><code>int × int</code> goes through <code>N = Math.imul</code>. A plain <code>*</code> on doubles would lose the low bits that 16.16 maths depends on.</li><li><code>(short)</code> casts become <code>&lt;&lt; 16 &gt;&gt; 16</code>. Unsigned byte reads become <code>&amp; 255</code>.</li></ul></div>
+<div class="card span6"><h3>long arithmetic becomes BigInt</h3><ul><li>Java <code>long</code> maps to <code>BigInt</code>: <code>F</code> widens, <code>Cu</code>/<code>Cy</code> multiply/divide, <code>CQ</code> shifts, <code>BI</code> narrows to int, <code>Nu</code> takes the high word.</li><li>The renderer uses <code>long</code> to keep precision in projection, clipping and the per-column texture coordinate. So <code>LQ</code>, <code>Ic</code> and one line of the <code>AAP</code> loop allocate BigInts every frame, once per column. It is the costliest translation in the hot path, and it is still fast enough for a 176-pixel-wide view.</li></ul></div>
+<div class="card span6"><h3>Arrays and objects</h3><ul><li>Java arrays are wrappers around typed arrays, hence <code>G6.data[n]</code>, <code>Et.data[b]</code>.</li><li><code>System.arraycopy</code> (<code>E2</code>) bounds-checks, then uses <code>TypedArray.set(subarray(...))</code>. That is how floor and ceiling rows are blitted.</li><li>Fields are renamed too: segment vertices are <code>g1</code>/<code>g0</code>, and a vertex is <code>gS</code>, <code>gT</code>, <code>g3</code> (x/depth, y/screen-x, texture u).</li></ul></div>
+<div class="card span6"><h3>Control flow</h3><ul><li>Each static method begins with <code>J()</code>, the class-initialiser guard. On first call it runs the renderer class’s <code>&lt;clinit&gt;</code> and then replaces itself with a no-op.</li><li>The renderer never blocks, so TeaVM emits ordinary functions. None of the <code>$p</code> resume-state machinery from section 10 appears here, and <code>JT</code> is ordinary JS recursion.</li><li>Register allocation reuses locals freely. In <code>OE</code>’s unrolled loop, <code>b</code> and <code>c</code> swap roles between dst index and tex coord halfway through, and swap back by the end of each pass.</li></ul></div>
+</div>
+<p class="src">Evidence: functions named above in the inline TeaVM script of <code>index.html</code>. Locate them via the string-pool entries <code>"/sintable.bin"</code>, <code>"nd:%1/%2"</code>, <code>"li:%1/%2/%3"</code>, <code>"/wtexels.bin"</code>, <code>"/stexels.bin"</code>. <code>sintable.bin</code> decodes to 256 little-endian ints, <code>sin(2πi/256)·65536</code>.</p>
+</section>
+<section id="input"><h2>6. Input: DOM events become MIDP keycodes</h2>
 <p>Keyboard and touch controls converge on the same integer queue. The page maps browser key names directly to classic J2ME game-action codes and numeric phone-key codes, then pushes them into <code>window.__keyq</code>.</p>
 <div class="tablewrap"><table><thead><tr><th>Physical/UI input</th><th>Queued code</th><th>MIDP meaning in shim/game</th></tr></thead><tbody><tr><td>Arrow Up / W</td><td><code>-1</code></td><td>UP / move forward</td></tr><tr><td>Arrow Down / S</td><td><code>-2</code></td><td>DOWN / move back</td></tr><tr><td>Arrow Left / A</td><td><code>-3</code></td><td>LEFT / turn</td></tr><tr><td>Arrow Right / D</td><td><code>-4</code></td><td>RIGHT / turn</td></tr><tr><td>Enter / Space</td><td><code>-5</code></td><td>FIRE / OK / action</td></tr><tr><td>Q / Escape</td><td><code>-6</code></td><td>Left soft key / menu</td></tr><tr><td>E / Tab / M</td><td><code>-7</code></td><td>Right soft key / map</td></tr><tr><td>0–9, *, #</td><td>ASCII 48–57, 42, 35</td><td>Phone keypad semantics preserved</td></tr></tbody></table></div>
 <p>Pointer buttons use the exact same <code>data-code</code> values. Repeatable controls implement handset-like key repeat in the host layer: one immediate enqueue, a 420 ms hold delay, then a repeat every 200 ms while the queue is not already backed up.</p>
 <div class="diagram"><svg viewBox="0 0 1080 290"><defs><marker id="arrow4" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2f9f57"/></marker></defs><rect class="box green" x="40" y="90" width="190" height="100" rx="12"/><text class="t1" x="60" y="123">DOM input</text><text class="t2" x="60" y="149">keydown / pointerdown</text><text class="t2" x="60" y="170">repeat timers</text><rect class="box hot" x="290" y="90" width="190" height="100" rx="12"/><text class="t1" x="310" y="123">Integer queue</text><text class="t2" x="310" y="149">window.__keyq</text><text class="t2" x="310" y="170">FIFO</text><rect class="box mid" x="540" y="90" width="210" height="100" rx="12"/><text class="t1" x="560" y="123">TeaVM input thread</text><text class="t2" x="560" y="149">poll Tb() / sleep</text><text class="t2" x="560" y="170">dispatch to active Canvas</text><rect class="box violet" x="810" y="90" width="230" height="100" rx="12"/><text class="t1" x="830" y="123">DoomCanvas handler</text><text class="t2" x="830" y="149">getGameAction mapping</text><text class="t2" x="830" y="170">movement/menu/action</text><path class="arrow" d="M230 140 H290"/><path class="arrow" d="M480 140 H540"/><path class="arrow" d="M750 140 H810"/></svg></div>
 </section>
-<section id="audio"><h2>6. Audio in depth: MIDI parsing, synthesis, scheduling, and PCM output</h2>
+<section id="audio"><h2>7. Audio in depth: MIDI parsing, synthesis, scheduling, and PCM output</h2>
 <p>The engine’s media implementation is compact but technically rich. It implements just enough of the J2ME media surface for Doom RPG: load a MIDI stream, realize/prefetch conceptually, set loop count and volume, start/stop, and query running state. The actual synthesis is handwritten Web Audio code.</p>
 <div class="callout"><strong>Important scope:</strong> there is no separate WAV/PCM/MP3/OGG asset decoder in the attached engine. All packaged game audio resources are MIDI. The explicit PCM-like data is the generated white-noise buffer for percussion; the browser’s <code>AudioContext</code> then mixes all oscillator/noise nodes into its own sample stream for the audio device.</div>
-<h3>6.1 MIDI file ingestion</h3>
+<h3>7.1 MIDI file ingestion</h3>
 <div class="flow"><div class="step"><div><h4>Java opens <code>.mid</code> as a resource stream</h4><p>The resource shim resolves the path from the embedded resource dictionary. The media shim copies the stream into a Java byte array and passes those bytes to <code>__midiLoad</code>.</p></div></div><div class="step"><div><h4>Standard MIDI header and tracks are parsed</h4><p><code>parseMidi</code> recognizes <code>MThd</code>, reads header length, track count and division, then walks <code>MTrk</code> chunks. Variable-length quantities decode delta times.</p></div></div><div class="step"><div><h4>Running status is supported</h4><p>If an event byte does not carry the high status bit, the previous MIDI status byte is reused, matching normal SMF encoding.</p></div></div><div class="step"><div><h4>Only the events needed by this game are retained</h4><p>Tempo meta-event <code>FF 51</code>, program change, note-on and note-off are collected. SysEx data is skipped. Note-on with velocity 0 becomes note-off.</p></div></div><div class="step"><div><h4>Ticks become absolute seconds</h4><p>Events are sorted by tick. The parser integrates elapsed ticks against the current microseconds-per-quarter-note tempo and MIDI division. Every note becomes a compact structure containing start time, duration, channel, note number, normalized velocity and program.</p></div></div></div>
 <pre>seconds += (eventTick - lastTick) * tempoUSPerQuarter / 1_000_000 / division
 frequency = 440 * 2 ** ((midiNote - 69) / 12)</pre>
-<h3>6.2 Instrument synthesis</h3>
+<h3>7.2 Instrument synthesis</h3>
 <p>There is no SoundFont, sample bank or General MIDI ROM. Program numbers are quantized into a tiny waveform palette:</p>
 <div class="tablewrap"><table><thead><tr><th>Program range</th><th>Oscillator</th><th>Interpretation</th></tr></thead><tbody><tr><td>0–7</td><td>Triangle</td><td>Soft/fundamental-rich approximation</td></tr><tr><td>8–31</td><td>Square</td><td>Hollow/brassy/reedy approximation</td></tr><tr><td>32–39</td><td>Triangle</td><td>Another soft group</td></tr><tr><td>40–55</td><td>Sawtooth</td><td>Bright/string-like approximation</td></tr><tr><td>56–79</td><td>Square</td><td>Brass/reed-style bucket</td></tr><tr><td>80–95</td><td>Sawtooth</td><td>Bright synth-style bucket</td></tr><tr><td>96+</td><td>Square</td><td>Fallback</td></tr></tbody></table></div>
 <p>Each pitched note creates an <code>OscillatorNode</code>. Frequency uses equal temperament around A4=440 Hz. Velocity is normalized to 0..1, multiplied by 0.22, and non-triangle oscillators receive a further ×0.55 attenuation to stop their stronger harmonic content from dominating.</p>
-<h3>6.3 Percussion synthesis = generated PCM noise + filtering</h3>
+<h3>7.3 Percussion synthesis = generated PCM noise + filtering</h3>
 <p>MIDI channel 10 (zero-based channel 9) takes a completely different path. The engine lazily allocates a mono <code>AudioBuffer</code> containing half a second of random floating-point samples in [-1,+1] at the current device sample rate. This is actual PCM-like sample data, generated procedurally rather than loaded from the game.</p>
 <pre>noiseBuf = audioContext.createBuffer(1, sampleRate * 0.5, sampleRate)
 for each float sample:
     sample = random() * 2 - 1</pre>
 <p>A <code>BufferSourceNode</code> replays the noise through a band-pass biquad. The MIDI note number selects a crude drum spectral region: below 40 → 180 Hz, below 50 → 900 Hz, otherwise 5 kHz. Low drums get about 180 ms; others about 90 ms; percussion velocity is boosted ×1.8. This gives kick/snare/hat-like differentiation with almost no asset footprint.</p>
-<h3>6.4 Envelopes, mixing, volume, looping</h3>
+<h3>7.4 Envelopes, mixing, volume, looping</h3>
 <p>Every note has its own <code>GainNode</code>. The envelope is a short linear attack (~6 ms), a sustain plateau, and a ~30 ms linear release. Notes are capped at 4 seconds. Their gains feed a per-player gain; each player gain feeds the global master gain; the master gain feeds <code>AudioContext.destination</code>.</p>
 <div class="diagram"><svg viewBox="0 0 1080 520"><defs><marker id="arrow5" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2f9f57"/></marker></defs>
 <rect class="box violet" x="40" y="50" width="210" height="90" rx="12"/><text class="t1" x="60" y="82">Embedded .mid bytes</text><text class="t2" x="60" y="108">Uint8Array resource</text>
@@ -199,7 +362,7 @@ for each float sample:
 <p>Looping is implemented above the audio graph. A pass schedules the entire song from a chosen absolute <code>AudioContext.currentTime</code> plus 30 ms. The next pass is armed by <code>setTimeout</code> roughly 250 ms before the scheduled end, reducing gaps while avoiding an indefinitely large pre-scheduled graph. A negative loop count means infinite looping; positive counts decrement per pass.</p>
 <p>The first key/touch interaction calls <code>audio()</code>, which creates/resumes the <code>AudioContext</code>. This is a practical browser-autoplay adaptation: sound activation occurs under a user gesture before Java-side playback requests need it.</p>
 </section>
-<section id="persistence"><h2>7. RecordStore: J2ME records serialized into localStorage</h2>
+<section id="persistence"><h2>8. RecordStore: J2ME records serialized into localStorage</h2>
 <p>The Record Management System is emulated rather than replaced by ad-hoc game saves. The Java-side RecordStore shim keeps the familiar concepts: named stores, monotonically allocated record IDs, add/update/read/delete behavior, enumeration, and the expected MIDP exception types.</p>
 <p>At the host boundary, each store becomes one string value under a namespaced browser key:</p>
 <pre>doomrpg:rs:&lt;store-name&gt; → serialized RecordStore</pre>
@@ -207,25 +370,25 @@ for each float sample:
 <div class="diagram"><svg viewBox="0 0 1080 310"><defs><marker id="arrow6" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2f9f57"/></marker></defs><rect class="box violet" x="40" y="95" width="230" height="105" rx="12"/><text class="t1" x="60" y="128">Game save/config</text><text class="t2" x="60" y="154">DataOutputStream</text><text class="t2" x="60" y="175">binary records</text><rect class="box mid" x="330" y="95" width="230" height="105" rx="12"/><text class="t1" x="350" y="128">RecordStore shim</text><text class="t2" x="350" y="154">record IDs + byte[]</text><text class="t2" x="350" y="175">hex serialization</text><rect class="box hot" x="620" y="95" width="190" height="105" rx="12"/><text class="t1" x="640" y="128">Bridge helpers</text><text class="t2" x="640" y="154">get/set/remove/list</text><text class="t2" x="640" y="175">doomrpg: prefix</text><rect class="box green" x="870" y="95" width="170" height="105" rx="12"/><text class="t1" x="890" y="128">localStorage</text><text class="t2" x="890" y="154">persistent browser</text><text class="t2" x="890" y="175">origin storage</text><path class="arrow" d="M270 147 H330"/><path class="arrow" d="M560 147 H620"/><path class="arrow" d="M810 147 H870"/></svg></div>
 <p>If browser storage throws (for example because storage is unavailable), the host helpers fall back to <code>window.__mem</code>. That preserves runtime behavior for the session but loses persistence after reload.</p>
 </section>
-<section id="resources"><h2>8. Resource packaging and Java resource streams</h2>
+<section id="resources"><h2>9. Resource packaging and Java resource streams</h2>
 <p>All game resources are embedded directly in the HTML as base64 strings. Before the game boots, a small host initializer decodes every string with <code>atob</code> and copies it into a <code>Uint8Array</code>, building <code>window.__res</code>. The base64 dictionary is then deleted.</p>
 <div class="grid"><div class="card span6"><h3>Observed payload mix</h3><p><strong>18 .mid, 17 .img, 17 .png, 15 .str, 13 .bsp, 6 .bin, 1 .db, 1 .map, 1 .MF</strong></p><p class="section-note">The important architectural detail is that the browser never performs network fetches for game data after the HTML arrives.</p></div><div class="card span6"><h3>Java-side resource behavior</h3><p>The generated resource loader normalizes a leading slash, asks the host for byte length, allocates a Java byte array, asks the host to copy bytes into it, then wraps that data in a stream. This preserves the <code>Class.getResourceAsStream</code>-style consumption model used by the original code.</p></div></div>
 <div class="flow"><div class="step"><div><h4>HTML parse</h4><p><code>window.__resB64</code> contains maps, textures, strings, images, MIDI and other binary assets.</p></div></div><div class="step"><div><h4>Decode once</h4><p>Every resource becomes a typed byte array in <code>window.__res</code>.</p></div></div><div class="step"><div><h4>Java opens by resource path</h4><p>Compiled Java asks the bridge for size and then copies bytes into a Java array.</p></div></div><div class="step"><div><h4>Existing game parsers remain in charge</h4><p>BSP/map/string/image/MIDI consumers continue to read streams using the compatibility library.</p></div></div></div>
 </section>
-<section id="threads"><h2>9. Threads and timing: cooperative Java semantics on the browser event loop</h2>
+<section id="threads"><h2>10. Threads and timing: cooperative Java semantics on the browser event loop</h2>
 <p>TeaVM compiles blocking Java operations into coroutine-like state machines. The generated functions have explicit resume states, save local variables before suspension, and use callbacks/timers to resume later. <code>Thread.sleep</code>-style behavior becomes <code>setTimeout</code>, not a blocking browser thread.</p>
 <p>The input worker illustrates this cleanly: it drains queued keycodes, dispatches them to the active Canvas, then sleeps; TeaVM suspends the Java thread and schedules a future continuation. The browser event loop remains responsive while the Java source retains a threaded programming model.</p>
 <div class="diagram"><svg viewBox="0 0 1080 350"><defs><marker id="arrow7" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2f9f57"/></marker></defs><rect class="box violet" x="40" y="105" width="220" height="110" rx="12"/><text class="t1" x="60" y="138">Java Thread.run()</text><text class="t2" x="60" y="164">drain input / game work</text><text class="t2" x="60" y="185">Thread.sleep(n)</text><rect class="box mid" x="320" y="105" width="220" height="110" rx="12"/><text class="t1" x="340" y="138">TeaVM suspend</text><text class="t2" x="340" y="164">save locals + state</text><text class="t2" x="340" y="185">return to JS event loop</text><rect class="box hot" x="600" y="105" width="180" height="110" rx="12"/><text class="t1" x="620" y="138">setTimeout</text><text class="t2" x="620" y="164">host timer</text><text class="t2" x="620" y="185">no busy wait</text><rect class="box green" x="840" y="105" width="200" height="110" rx="12"/><text class="t1" x="860" y="138">Resume state</text><text class="t2" x="860" y="164">restore locals</text><text class="t2" x="860" y="185">continue Java flow</text><path class="arrow" d="M260 160 H320"/><path class="arrow" d="M540 160 H600"/><path class="arrow" d="M780 160 H840"/><path d="M940 215 C940 300 150 300 150 215" stroke="#2f9f57" stroke-width="1.7" fill="none" marker-end="url(#arrow7)"/></svg></div>
 </section>
-<section id="boot"><h2>10. Boot and frame lifecycle</h2>
+<section id="boot"><h2>11. Boot and frame lifecycle</h2>
 <div class="flow"><div class="step"><div><h4>Browser loads the single HTML file</h4><p>Phone shell, 176×208 canvas, input controls and base64 resources are parsed.</p></div></div><div class="step"><div><h4>Resource dictionary is materialized</h4><p>Base64 assets become <code>Uint8Array</code> values.</p></div></div><div class="step"><div><h4>User presses Power On</h4><p>The handler initializes/resumes Web Audio, hides the boot overlay and invokes TeaVM’s generated <code>main([])</code>. Requiring user input also solves browser autoplay restrictions.</p></div></div><div class="step"><div><h4>MIDlet/display shim starts</h4><p>The generated entry creates the Doom RPG shim/MIDlet object, initializes the display and screen backing image, then schedules its Java threads.</p></div></div><div class="step"><div><h4>Game loop renders in software</h4><p>World simulation and drawing update the Java-side framebuffer. At selected points the Canvas shim flushes through <code>__present</code>.</p></div></div><div class="step"><div><h4>Concurrent host services feed it</h4><p>DOM events enqueue keys, timers resume TeaVM threads, MIDI nodes run on the Web Audio timeline, and RecordStore calls persist browser-side state.</p></div></div></div>
 </section>
-<section id="limits"><h2>11. Fidelity, deliberate simplifications, and engineering trade-offs</h2>
+<section id="limits"><h2>12. Fidelity, deliberate simplifications, and engineering trade-offs</h2>
 <div class="tablewrap"><table><thead><tr><th>Subsystem</th><th>Faithfulness</th><th>Deliberate compromise</th></tr></thead><tbody><tr><td>Game logic</td><td class="yes">High</td><td>Java semantics are AOT-compiled rather than executed by a handset JVM.</td></tr><tr><td>Display resolution</td><td class="yes">Exact logical LCD</td><td>Browser scales the fixed 176×208 buffer to available screen size.</td></tr><tr><td>Graphics</td><td class="yes">MIDP-shaped software raster path</td><td>Final presentation is one Canvas ImageData blit rather than handset LCD hardware.</td></tr><tr><td>Keyboard</td><td class="yes">Preserved integer/keypad codes</td><td>DOM keyboard and touch controls synthesize handset events; host adds repeat timing.</td></tr><tr><td>Vibration</td><td>Direct API mapping</td><td>Depends on browser/device support and permissions.</td></tr><tr><td>RecordStore</td><td class="yes">Record-oriented semantics retained</td><td>Stores are serialized into localStorage strings rather than RMS flash records.</td></tr><tr><td>MIDI control flow</td><td>Substantial</td><td>SMF timing, channels, note velocity, programs, loops and volume are honored.</td></tr><tr><td>General MIDI timbre</td><td class="no">Approximate</td><td>Programs collapse to triangle/square/sawtooth; no GM sample set or SoundFont.</td></tr><tr><td>Drums</td><td>Procedural approximation</td><td>Band-passed white noise, three spectral buckets, short fixed decays.</td></tr><tr><td>PCM/sample media</td><td class="no">Not implemented as an asset format</td><td>No WAV/PCM/MP3/OGG resources or decoder are present. AudioContext creates final PCM output; drum noise is generated PCM-like float data.</td></tr></tbody></table></div>
 <h3>Why this architecture works well</h3><ul class="two"><li><strong>Small compatibility surface:</strong> most complexity stays in compiled Java, so host code remains inspectable.</li><li><strong>Portable rendering:</strong> software pixels make game output independent of browser drawing semantics.</li><li><strong>Offline-friendly:</strong> all resources live inside one HTML document.</li><li><strong>Preserved save model:</strong> game code still talks in RecordStore terms.</li><li><strong>Autoplay-safe audio:</strong> user input initializes AudioContext early.</li><li><strong>Deterministic MIDI timing:</strong> notes are scheduled on the AudioContext timeline rather than fired by JS timers one by one.</li><li><strong>Cheap percussion:</strong> one reusable half-second noise buffer serves every drum note.</li><li><strong>Pragmatic timbre:</strong> a handful of oscillator shapes provides recognizable music at almost zero sample cost.</li></ul>
 <div class="callout"><span class="pill direct">DIRECT</span> Sections describing <code>__present</code>, MIDI parsing/synthesis, input mapping, resource decoding and localStorage helpers are directly visible in the attached HTML. <span class="pill infer">INFERENCE</span> Names such as “Canvas shim”, “RecordStore shim” and “Player façade” describe the role of minified TeaVM-generated functions; the original symbolic Java class names are mostly stripped in this production build.</div>
 </section>
-<section><h2>12. Reconstructed end-to-end process map</h2>
+<section><h2>13. Reconstructed end-to-end process map</h2>
 <div class="diagram"><svg viewBox="0 0 1080 760"><defs><marker id="arrow8" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2f9f57"/></marker></defs>
 <rect class="box violet" x="380" y="30" width="320" height="70" rx="12"/><text class="t1" x="405" y="61">Doom RPG game state + loop</text><text class="t2" x="405" y="83">TeaVM-compiled Java</text>
 <rect class="box mid" x="80" y="160" width="250" height="90" rx="12"/><text class="t1" x="100" y="192">Graphics / Canvas</text><text class="t2" x="100" y="217">software int[] pixels</text>
