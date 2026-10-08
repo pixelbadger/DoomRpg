@@ -7,7 +7,7 @@ every game resource into a single HTML file.
 | Path | What it is |
 | --- | --- |
 | `site/index.html` | The playable build, served at the root of the Pages site |
-| `site/architecture.html` | A technical write-up of the engine: MIDP bridge, software framebuffer, input, MIDI → Web Audio synth, RecordStore persistence, TeaVM threading |
+| `site/architecture.html` | A technical write-up of the engine: MIDP bridge, software framebuffer, BSP world renderer, input, MIDI → Web Audio synth, RecordStore persistence, TeaVM threading |
 | `.github/workflows/pages.yml` | Deploys `site/` to GitHub Pages |
 
 ## Controls
