@@ -80,6 +80,21 @@ canvas#screen{image-rendering:pixelated;image-rendering:crisp-edges;display:bloc
 .overlay p{margin:0;max-width:34ch;color:var(--phos-dim);font-size:11.5px}
 .overlay button{font:inherit;font-size:14px;letter-spacing:.14em;text-transform:uppercase;background:transparent;color:var(--phos);
   border:1px solid var(--phos);border-radius:2px;padding:9px 18px;cursor:pointer;box-shadow:0 0 12px rgba(77,255,136,.25),inset 0 0 10px rgba(77,255,136,.12)}
+#boot{transition:opacity .35s ease}
+#boot.out{opacity:0;pointer-events:none}
+#boot pre span{display:block;opacity:0;animation:ln .01s linear forwards}
+#boot pre span:nth-child(2){animation-delay:.15s}#boot pre span:nth-child(3){animation-delay:.3s}
+#boot pre span:nth-child(4){animation-delay:.45s}#boot pre span:nth-child(5){animation-delay:.6s}
+#boot pre b{font-weight:400;color:var(--phos)}
+@keyframes ln{to{opacity:1}}
+.bar{position:relative;width:100%;max-width:240px;height:10px;border:1px solid var(--phos-dim);overflow:hidden;
+  box-shadow:0 0 8px rgba(77,255,136,.2),inset 0 0 6px rgba(77,255,136,.1)}
+.bar::before{content:"";position:absolute;inset:2px;background:repeating-linear-gradient(90deg,var(--phos-faint) 0 6px,transparent 6px 8px)}
+.bar i{position:absolute;top:2px;bottom:2px;left:2px;width:35%;background:repeating-linear-gradient(90deg,var(--phos) 0 6px,transparent 6px 8px);
+  box-shadow:0 0 8px rgba(77,255,136,.6);animation:sweep 1.1s ease-in-out infinite alternate}
+@keyframes sweep{from{transform:translateX(0)}to{transform:translateX(calc(185% - 4px))}}
+#boot.ready .bar i{animation:none;width:calc(100% - 4px)}
+.stat{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber)}
 .overlay button:hover,.overlay button:focus-visible{background:var(--phos);color:var(--page);text-shadow:none;outline:none}
 .overlay .cursor::after{content:"█";animation:blink 1s steps(1) infinite;margin-left:2px}
 #err{color:var(--red-hi)} #err #errmsg{color:var(--red-hi);text-shadow:0 0 6px rgba(238,68,51,.5)}
@@ -114,7 +129,7 @@ button.k small{font-size:9px;color:var(--amber-dim);text-shadow:none;margin-top:
 .meta button[aria-pressed="true"]{color:var(--amber);border-color:var(--amber-dim)}
 @media (hover:hover) and (pointer:fine){ .touchonly{display:none} }
 @media (max-height:700px){ .nums{display:none} .plate{display:none} }
-@media (prefers-reduced-motion:reduce){ .plate .led::before,.overlay .cursor::after{animation:none} }
+@media (prefers-reduced-motion:reduce){ .plate .led::before,.overlay .cursor::after,#boot pre span,.bar i{animation:none} #boot pre span{opacity:1} }
 </style>
 </head>
 <body>
@@ -132,15 +147,12 @@ button.k small{font-size:9px;color:var(--amber-dim);text-shadow:none;margin-top:
   <div class="bezel">
     <canvas id="screen" width="176" height="208" aria-label="Doom RPG game screen"></canvas>
     <div class="overlay" id="boot">
-      <pre>UAC TERMINAL OS v2.2 // PHOBOS BASE
-MEM CHECK ........ OK
-DISPLAY 176x208 .. OK
-AUDIO / MIDI ..... STANDBY
-RMS STORAGE ...... LOCAL</pre>
+      <pre><span>UAC TERMINAL OS v2.2 // PHOBOS BASE</span><span>MEM CHECK ........ <b>OK</b></span><span>DISPLAY 176x208 .. <b>OK</b></span><span>AUDIO / MIDI ..... STANDBY</span><span>RMS STORAGE ...... LOCAL</span></pre>
       <div class="ttl">DOOM RPG</div>
       <p>The original 2005 J2ME game, ahead-of-time compiled from Java to JavaScript.</p>
-      <button id="start">[ Power on ]</button>
-      <p class="cursor">Keys: arrows move/turn · Enter/Space act · Q menu · E map · Z/X strafe · 1–9 keypad</p>
+      <div class="bar" role="progressbar" aria-label="Loading"><i></i></div>
+      <div class="stat cursor" id="bootstat" aria-live="polite">Establishing link</div>
+      <p>Keys: arrows move/turn · Enter/Space act · Q menu · E map · Z/X strafe · 1–9 keypad</p>
     </div>
     <div class="overlay" id="err" hidden><div class="ttl" style="color:var(--red-hi)">SYSTEM FAULT</div><div id="errmsg"></div><button onclick="location.reload()">[ Restart ]</button></div>
   </div>
@@ -273,7 +285,8 @@ window.__resB64={"base.str": "DgEKACUxIGRhbWFnZSEMACUxIGF0dGFja3MlMhIAJTEgdG9vay
     var g=ac.createGain(); g.gain.value=(players[id+'v']==null?100:players[id+'v'])/100; g.connect(master);
     var pl=players[id]={gain:g,nodes:[],loops:loops,timer:0,end:0};
     var at=ac.currentTime+.03;
-    function pass(){ pl.nodes=pl.nodes.filter(function(n){return n.__done!==true}); schedule(id,at); at=pl.end;
+    function pass(){ if (ac.state!=='running'){ at=ac.currentTime+.03; pl.timer=setTimeout(pass,250); return; }
+      pl.nodes=pl.nodes.filter(function(n){return n.__done!==true}); schedule(id,at); at=pl.end;
       if (pl.loops<0 || --pl.loops>0) pl.timer=setTimeout(pass, Math.max(50,(at-ac.currentTime-.25)*1000)); }
     pass();
   };
@@ -312,11 +325,22 @@ window.__resB64={"base.str": "DgEKACUxIGRhbWFnZSEMACUxIGF0dGFja3MlMhIAJTEgdG9vay
   });
 
   // ---------- boot ----------
-  var booted=false;
-  function boot(){ if(booted) return; booted=true; audio(); document.getElementById('boot').hidden=true;
-    try{ main([]); }catch(e){ window.__fatal('Failed to start: '+e); } }
-  document.getElementById('start').onclick=boot;
-  window.addEventListener('keydown', function(e){ if(!booted && !inLink(e) && (e.key==='Enter'||e.key===' ')){ e.preventDefault(); e.stopImmediatePropagation(); boot(); } }, true);
+  // Starts automatically once the page has loaded. Browsers keep the AudioContext suspended
+  // until the first user gesture, so any key, tap or click resumes it.
+  ['pointerdown','keydown'].forEach(function(ev){ window.addEventListener(ev, audio, true); });
+  var bootEl=document.getElementById('boot'), t0=performance.now(),
+      minShow=matchMedia('(prefers-reduced-motion:reduce)').matches?0:900;
+  function hideBoot(){ bootEl.classList.add('out'); setTimeout(function(){ bootEl.hidden=true; },400); }
+  var present=window.__present;
+  window.__present=function(px,w,h){ present(px,w,h); if(window.__present!==present){ window.__present=present; hideBoot(); } };
+  function boot(){
+    bootEl.classList.add('ready'); document.getElementById('bootstat').textContent='Link established';
+    window.__keyq.length=0;
+    setTimeout(function(){
+      try{ main([]); }catch(e){ hideBoot(); window.__fatal('Failed to start: '+e); }
+    },50);
+  }
+  window.addEventListener('load', function(){ setTimeout(boot, Math.max(0, minShow-(performance.now()-t0))); });
 })();
 </script>
 <script>
